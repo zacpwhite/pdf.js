@@ -1,5 +1,3 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 /* Copyright 2012 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +15,7 @@
 /* globals FONT_IDENTITY_MATRIX, FontType, warn, GlyphsUnicode, error, string32,
            readUint32, Stream, FontRendererFactory, shadow, stringToBytes,
            bytesToString, info, assert, IdentityCMap, Name, CMapFactory, PDFJS,
-           isNum, Lexer, isArray, ISOAdobeCharset, ExpertCharset,
+           isNum, Lexer, isArray, ISOAdobeCharset, ExpertCharset, isInt,
            ExpertSubsetCharset, Util, DingbatsGlyphsUnicode */
 
 'use strict';
@@ -2135,6 +2133,9 @@ function reverseIfRtl(chars) {
 }
 
 function adjustWidths(properties) {
+  if (!properties.fontMatrix) {
+    return;
+  }
   if (properties.fontMatrix[0] === FONT_IDENTITY_MATRIX[0]) {
     return;
   }
@@ -2170,23 +2171,26 @@ function getFontType(type, subtype) {
 }
 
 var Glyph = (function GlyphClosure() {
-  function Glyph(fontChar, unicode, accent, width, vmetric, operatorListId) {
+  function Glyph(fontChar, unicode, accent, width, vmetric, operatorListId,
+                 isSpace) {
     this.fontChar = fontChar;
     this.unicode = unicode;
     this.accent = accent;
     this.width = width;
     this.vmetric = vmetric;
     this.operatorListId = operatorListId;
+    this.isSpace = isSpace;
   }
 
-  Glyph.prototype.matchesForCache =
-      function(fontChar, unicode, accent, width, vmetric, operatorListId) {
+  Glyph.prototype.matchesForCache = function(fontChar, unicode, accent, width,
+                                             vmetric, operatorListId, isSpace) {
     return this.fontChar === fontChar &&
            this.unicode === unicode &&
            this.accent === accent &&
            this.width === width &&
            this.vmetric === vmetric &&
-           this.operatorListId === operatorListId;
+           this.operatorListId === operatorListId &&
+           this.isSpace === isSpace;
   };
 
   return Glyph;
@@ -2255,7 +2259,7 @@ var IdentityToUnicodeMap = (function IdentityToUnicodeMapClosure() {
     },
 
     charCodeOf: function (v) {
-      error('should not call .charCodeOf');
+      return (isInt(v) && v >= this.firstChar && v <= this.lastChar) ? v : -1;
     }
   };
 
@@ -2646,6 +2650,8 @@ var Font = (function FontClosure() {
         // view of the sanitizer
         data = this.checkAndRepair(name, file, properties);
         if (this.isOpenType) {
+          adjustWidths(properties);
+
           type = 'OpenType';
         }
         break;
@@ -2797,11 +2803,15 @@ var Font = (function FontClosure() {
     };
   }
 
-  function getRanges(glyphs) {
+  function getRanges(glyphs, numGlyphs) {
     // Array.sort() sorts by characters, not numerically, so convert to an
     // array of characters.
     var codes = [];
     for (var charCode in glyphs) {
+      // Remove an invalid glyph ID mappings to make OTS happy.
+      if (glyphs[charCode] >= numGlyphs) {
+        continue;
+      }
       codes.push({ fontCharCode: charCode | 0, glyphId: glyphs[charCode] });
     }
     codes.sort(function fontGetRangesSort(a, b) {
@@ -2830,8 +2840,8 @@ var Font = (function FontClosure() {
     return ranges;
   }
 
-  function createCmapTable(glyphs) {
-    var ranges = getRanges(glyphs);
+  function createCmapTable(glyphs, numGlyphs) {
+    var ranges = getRanges(glyphs, numGlyphs);
     var numTables = ranges[ranges.length - 1][1] > 0xFFFF ? 2 : 1;
     var cmap = '\x00\x00' + // version
                string16(numTables) +  // numTables
@@ -3223,6 +3233,15 @@ var Font = (function FontClosure() {
        * PDF spec
        */
       function readCmapTable(cmap, font, isSymbolicFont, hasEncoding) {
+        if (!cmap) {
+          warn('No cmap table available.');
+          return {
+            platformId: -1,
+            encodingId: -1,
+            mappings: [],
+            hasShortCmap: false
+          };
+        }
         var segment;
         var start = (font.start ? font.start : 0) + cmap.offset;
         font.pos = start;
@@ -4065,6 +4084,8 @@ var Font = (function FontClosure() {
           cffFile = new Stream(tables['CFF '].data);
           cff = new CFFFont(cffFile, properties);
 
+          adjustWidths(properties);
+
           return this.convert(name, cff, properties);
         }
 
@@ -4148,6 +4169,20 @@ var Font = (function FontClosure() {
         tables.hhea.data[10] = 0xFF;
         tables.hhea.data[11] = 0xFF;
       }
+
+      // Extract some more font properties from the OpenType head and
+      // hhea tables; yMin and descent value are always negative.
+      var metricsOverride = {
+        unitsPerEm: int16(tables.head.data[18], tables.head.data[19]),
+        yMax: int16(tables.head.data[42], tables.head.data[43]),
+        yMin: int16(tables.head.data[38], tables.head.data[39]) - 0x10000,
+        ascent: int16(tables.hhea.data[4], tables.hhea.data[5]),
+        descent: int16(tables.hhea.data[6], tables.hhea.data[7]) - 0x10000
+      };
+
+      // PDF FontDescriptor metrics lie -- using data from actual font.
+      this.ascent = metricsOverride.ascent / metricsOverride.unitsPerEm;
+      this.descent = metricsOverride.descent / metricsOverride.unitsPerEm;
 
       // The 'post' table has glyphs names.
       if (tables.post) {
@@ -4311,24 +4346,14 @@ var Font = (function FontClosure() {
       this.toFontChar = newMapping.toFontChar;
       tables.cmap = {
         tag: 'cmap',
-        data: createCmapTable(newMapping.charCodeToGlyphId)
+        data: createCmapTable(newMapping.charCodeToGlyphId, numGlyphs)
       };
 
       if (!tables['OS/2'] || !validateOS2Table(tables['OS/2'])) {
-        // extract some more font properties from the OpenType head and
-        // hhea tables; yMin and descent value are always negative
-        var override = {
-          unitsPerEm: int16(tables.head.data[18], tables.head.data[19]),
-          yMax: int16(tables.head.data[42], tables.head.data[43]),
-          yMin: int16(tables.head.data[38], tables.head.data[39]) - 0x10000,
-          ascent: int16(tables.hhea.data[4], tables.hhea.data[5]),
-          descent: int16(tables.hhea.data[6], tables.hhea.data[7]) - 0x10000
-        };
-
         tables['OS/2'] = {
           tag: 'OS/2',
           data: createOS2Table(properties, newMapping.charCodeToGlyphId,
-                               override)
+                               metricsOverride)
         };
       }
 
@@ -4459,7 +4484,8 @@ var Font = (function FontClosure() {
       builder.addTable('OS/2', createOS2Table(properties,
                                               newMapping.charCodeToGlyphId));
       // Character to glyphs mapping
-      builder.addTable('cmap', createCmapTable(newMapping.charCodeToGlyphId));
+      builder.addTable('cmap', createCmapTable(newMapping.charCodeToGlyphId,
+                       numGlyphs));
       // Font header
       builder.addTable('head',
             '\x00\x01\x00\x00' + // Version number
@@ -4681,7 +4707,7 @@ var Font = (function FontClosure() {
           }
         }
         // ... via toUnicode map
-        if (!charcode && 'toUnicode' in this) {
+        if (!charcode && this.toUnicode) {
           charcode = this.toUnicode.charCodeOf(glyphUnicode);
         }
         // setting it to unicode if negative or undefined
@@ -4701,7 +4727,7 @@ var Font = (function FontClosure() {
       return width;
     },
 
-    charToGlyph: function Font_charToGlyph(charcode) {
+    charToGlyph: function Font_charToGlyph(charcode, isSpace) {
       var fontCharCode, width, operatorListId;
 
       var widthCode = charcode;
@@ -4744,9 +4770,9 @@ var Font = (function FontClosure() {
       var glyph = this.glyphCache[charcode];
       if (!glyph ||
           !glyph.matchesForCache(fontChar, unicode, accent, width, vmetric,
-                                 operatorListId)) {
+                                 operatorListId, isSpace)) {
         glyph = new Glyph(fontChar, unicode, accent, width, vmetric,
-                          operatorListId);
+                          operatorListId, isSpace);
         this.glyphCache[charcode] = glyph;
       }
       return glyph;
@@ -4782,22 +4808,16 @@ var Font = (function FontClosure() {
           charcode = c.charcode;
           var length = c.length;
           i += length;
-          glyph = this.charToGlyph(charcode);
+          // Space is char with code 0x20 and length 1 in multiple-byte codes.
+          var isSpace = length === 1 && chars.charCodeAt(i - 1) === 0x20;
+          glyph = this.charToGlyph(charcode, isSpace);
           glyphs.push(glyph);
-          // placing null after each word break charcode (ASCII SPACE)
-          // Ignore occurences of 0x20 in multiple-byte codes.
-          if (length === 1 && chars.charCodeAt(i - 1) === 0x20) {
-            glyphs.push(null);
-          }
         }
       } else {
         for (i = 0, ii = chars.length; i < ii; ++i) {
           charcode = chars.charCodeAt(i);
-          glyph = this.charToGlyph(charcode);
+          glyph = this.charToGlyph(charcode, charcode === 0x20);
           glyphs.push(glyph);
-          if (charcode === 0x20) {
-            glyphs.push(null);
-          }
         }
       }
 

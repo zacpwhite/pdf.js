@@ -1,5 +1,3 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 /* Copyright 2012 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -161,7 +159,7 @@ var Page = (function PageClosure() {
       }.bind(this));
     },
 
-    getOperatorList: function Page_getOperatorList(handler, intent) {
+    getOperatorList: function Page_getOperatorList(handler, task, intent) {
       var self = this;
 
       var pdfManager = this.pdfManager;
@@ -194,8 +192,8 @@ var Page = (function PageClosure() {
           pageIndex: self.pageIndex,
           intent: intent
         });
-        return partialEvaluator.getOperatorList(contentStream, self.resources,
-          opList).then(function () {
+        return partialEvaluator.getOperatorList(contentStream, task,
+          self.resources, opList).then(function () {
             return opList;
           });
       });
@@ -212,7 +210,7 @@ var Page = (function PageClosure() {
         }
 
         var annotationsReadyPromise = Annotation.appendToOperatorList(
-          annotations, pageOpList, pdfManager, partialEvaluator, intent);
+          annotations, pageOpList, partialEvaluator, task, intent);
         return annotationsReadyPromise.then(function () {
           pageOpList.flush(true);
           return pageOpList;
@@ -220,7 +218,8 @@ var Page = (function PageClosure() {
       });
     },
 
-    extractTextContent: function Page_extractTextContent() {
+    extractTextContent: function Page_extractTextContent(task,
+                                                         normalizeWhitespace) {
       var handler = {
         on: function nullHandlerOn() {},
         send: function nullHandlerSend() {}
@@ -249,14 +248,23 @@ var Page = (function PageClosure() {
                                                     self.fontCache);
 
         return partialEvaluator.getTextContent(contentStream,
-                                               self.resources);
+                                               task,
+                                               self.resources,
+                                               /* stateManager = */ null,
+                                               normalizeWhitespace);
       });
     },
 
-    getAnnotationsData: function Page_getAnnotationsData() {
+    getAnnotationsData: function Page_getAnnotationsData(intent) {
       var annotations = this.annotations;
       var annotationsData = [];
       for (var i = 0, n = annotations.length; i < n; ++i) {
+        if (intent) {
+          if (!(intent === 'display' && annotations[i].viewable) &&
+              !(intent === 'print' && annotations[i].printable)) {
+            continue;
+          }
+        }
         annotationsData.push(annotations[i].data);
       }
       return annotationsData;
@@ -269,8 +277,7 @@ var Page = (function PageClosure() {
       for (var i = 0, n = annotationRefs.length; i < n; ++i) {
         var annotationRef = annotationRefs[i];
         var annotation = annotationFactory.create(this.xref, annotationRef);
-        if (annotation &&
-            (annotation.isViewable() || annotation.isPrintable())) {
+        if (annotation) {
           annotations.push(annotation);
         }
       }

@@ -1,5 +1,3 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 /* Copyright 2014 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,7 +13,7 @@
  * limitations under the License.
  */
 /* globals PDFJS, Util, AnnotationType, AnnotationBorderStyleType, warn,
-           CustomStyle */
+           CustomStyle, isExternalLinkTargetSet, LinkTargetStringMap */
 
 'use strict';
 
@@ -261,8 +259,9 @@ var AnnotationUtils = (function AnnotationUtilsClosure() {
 
     var link = document.createElement('a');
     link.href = link.title = item.url || '';
-    if (item.url && PDFJS.openExternalLinksInNewWindow) {
-      link.target = '_blank';
+
+    if (item.url && isExternalLinkTargetSet()) {
+      link.target = LinkTargetStringMap[PDFJS.externalLinkTarget];
     }
 
     container.appendChild(link);

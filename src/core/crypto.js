@@ -1,5 +1,3 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 /* Copyright 2012 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -1762,9 +1760,10 @@ var CipherTransformFactory = (function CipherTransformFactoryClosure() {
       if (pdfAlgorithm.checkUserPassword(password, userValidationSalt,
                                          userPassword)) {
         return pdfAlgorithm.getUserKey(password, userKeySalt, userEncryption);
-      } else if (pdfAlgorithm.checkOwnerPassword(password, ownerValidationSalt,
-                                                 uBytes,
-                                                 ownerPassword)) {
+      } else if (password.length && pdfAlgorithm.checkOwnerPassword(password,
+                                                   ownerValidationSalt,
+                                                   uBytes,
+                                                   ownerPassword)) {
         return pdfAlgorithm.getOwnerKey(password, ownerKeySalt, uBytes,
                                         ownerEncryption);
       }

@@ -1,5 +1,3 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 /* Copyright 2012 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -138,7 +136,8 @@ var Dict = (function DictClosure() {
     // Same as get(), but dereferences all elements if the result is an Array.
     getArray: function Dict_getArray(key1, key2, key3) {
       var value = this.get(key1, key2, key3);
-      if (!isArray(value)) {
+      var xref = this.xref;
+      if (!isArray(value) || !xref) {
         return value;
       }
       value = value.slice(); // Ensure that we don't modify the Dict data.
@@ -146,7 +145,7 @@ var Dict = (function DictClosure() {
         if (!isRef(value[i])) {
           continue;
         }
-        value[i] = this.xref.fetch(value[i]);
+        value[i] = xref.fetch(value[i]);
       }
       return value;
     },
@@ -1377,9 +1376,9 @@ var XRef = (function XRefClosure() {
           resolve(xref.fetch(ref, suppressEncryption));
         } catch (e) {
           if (e instanceof MissingDataException) {
-            streamManager.requestRange(e.begin, e.end, function () {
+            streamManager.requestRange(e.begin, e.end).then(function () {
               tryFetch(resolve, reject);
-            });
+            }, reject);
             return;
           }
           reject(e);
@@ -1655,6 +1654,7 @@ var ObjectLoader = (function() {
     this.keys = keys;
     this.xref = xref;
     this.refSet = null;
+    this.capability = null;
   }
 
   ObjectLoader.prototype = {
@@ -1675,11 +1675,11 @@ var ObjectLoader = (function() {
         nodesToVisit.push(this.obj[keys[i]]);
       }
 
-      this.walk(nodesToVisit);
+      this._walk(nodesToVisit);
       return this.capability.promise;
     },
 
-    walk: function ObjectLoader_walk(nodesToVisit) {
+    _walk: function ObjectLoader_walk(nodesToVisit) {
       var nodesToRevisit = [];
       var pendingRequests = [];
       // DFS walk of the object graph.
@@ -1726,7 +1726,7 @@ var ObjectLoader = (function() {
       }
 
       if (pendingRequests.length) {
-        this.xref.stream.manager.requestRanges(pendingRequests,
+        this.xref.stream.manager.requestRanges(pendingRequests).then(
             function pendingRequestCallback() {
           nodesToVisit = nodesToRevisit;
           for (var i = 0; i < nodesToRevisit.length; i++) {
@@ -1737,8 +1737,8 @@ var ObjectLoader = (function() {
               this.refSet.remove(node);
             }
           }
-          this.walk(nodesToVisit);
-        }.bind(this));
+          this._walk(nodesToVisit);
+        }.bind(this), this.capability.reject);
         return;
       }
       // Everything is loaded.

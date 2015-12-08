@@ -1,5 +1,3 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 /* Copyright 2012 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -48,6 +46,19 @@ var AnnotationType = {
   WIDGET: 1,
   TEXT: 2,
   LINK: 3
+};
+
+var AnnotationFlag = {
+  INVISIBLE: 0x01,
+  HIDDEN: 0x02,
+  PRINT: 0x04,
+  NOZOOM: 0x08,
+  NOROTATE: 0x10,
+  NOVIEW: 0x20,
+  READONLY: 0x40,
+  LOCKED: 0x80,
+  TOGGLENOVIEW: 0x100,
+  LOCKEDCONTENTS: 0x200
 };
 
 var AnnotationBorderStyleType = {
@@ -213,6 +224,11 @@ function warn(msg) {
   }
 }
 
+// Deprecated API function -- treated as warnings.
+function deprecated(details) {
+  warn('Deprecated API usage: ' + details);
+}
+
 // Fatal errors that should trigger the fallback UI and halt execution by
 // throwing an exception.
 function error(msg) {
@@ -220,7 +236,6 @@ function error(msg) {
     console.log('Error: ' + msg);
     console.log(backtrace());
   }
-  UnsupportedManager.notify(UNSUPPORTED_FEATURES.unknown);
   throw new Error(msg);
 }
 
@@ -246,22 +261,6 @@ var UNSUPPORTED_FEATURES = PDFJS.UNSUPPORTED_FEATURES = {
   shadingPattern: 'shadingPattern',
   font: 'font'
 };
-
-var UnsupportedManager = PDFJS.UnsupportedManager =
-  (function UnsupportedManagerClosure() {
-  var listeners = [];
-  return {
-    listen: function (cb) {
-      listeners.push(cb);
-    },
-    notify: function (featureId) {
-      warn('Unsupported feature "' + featureId + '"');
-      for (var i = 0, ii = listeners.length; i < ii; i++) {
-        listeners[i](featureId);
-      }
-    }
-  };
-})();
 
 // Combines two URLs. The baseUrl shall be absolute URL. If the url is an
 // absolute URL, it will be returned as is.
@@ -327,6 +326,49 @@ function shadow(obj, prop, value) {
   return value;
 }
 PDFJS.shadow = shadow;
+
+var LinkTarget = PDFJS.LinkTarget = {
+  NONE: 0, // Default value.
+  SELF: 1,
+  BLANK: 2,
+  PARENT: 3,
+  TOP: 4,
+};
+var LinkTargetStringMap = [
+  '',
+  '_self',
+  '_blank',
+  '_parent',
+  '_top'
+];
+
+function isExternalLinkTargetSet() {
+//#if !MOZCENTRAL
+  if (PDFJS.openExternalLinksInNewWindow) {
+    deprecated('PDFJS.openExternalLinksInNewWindow, please use ' +
+               '"PDFJS.externalLinkTarget = PDFJS.LinkTarget.BLANK" instead.');
+    if (PDFJS.externalLinkTarget === LinkTarget.NONE) {
+      PDFJS.externalLinkTarget = LinkTarget.BLANK;
+    }
+    // Reset the deprecated parameter, to suppress further warnings.
+    PDFJS.openExternalLinksInNewWindow = false;
+  }
+//#endif
+  switch (PDFJS.externalLinkTarget) {
+    case LinkTarget.NONE:
+      return false;
+    case LinkTarget.SELF:
+    case LinkTarget.BLANK:
+    case LinkTarget.PARENT:
+    case LinkTarget.TOP:
+      return true;
+  }
+  warn('PDFJS.externalLinkTarget is invalid: ' + PDFJS.externalLinkTarget);
+  // Reset the external link target, to suppress further warnings.
+  PDFJS.externalLinkTarget = LinkTarget.NONE;
+  return false;
+}
+PDFJS.isExternalLinkTargetSet = isExternalLinkTargetSet;
 
 var PasswordResponses = PDFJS.PasswordResponses = {
   NEED_PASSWORD: 1,
@@ -1459,26 +1501,20 @@ PDFJS.createObjectURL = (function createObjectURLClosure() {
   };
 })();
 
-function MessageHandler(name, comObj) {
-  this.name = name;
+function MessageHandler(sourceName, targetName, comObj) {
+  this.sourceName = sourceName;
+  this.targetName = targetName;
   this.comObj = comObj;
   this.callbackIndex = 1;
   this.postMessageTransfers = true;
   var callbacksCapabilities = this.callbacksCapabilities = {};
   var ah = this.actionHandler = {};
 
-  ah['console_log'] = [function ahConsoleLog(data) {
-    console.log.apply(console, data);
-  }];
-  ah['console_error'] = [function ahConsoleError(data) {
-    console.error.apply(console, data);
-  }];
-  ah['_unsupported_feature'] = [function ah_unsupportedFeature(data) {
-    UnsupportedManager.notify(data);
-  }];
-
-  comObj.onmessage = function messageHandlerComObjOnMessage(event) {
+  this._onComObjOnMessage = function messageHandlerComObjOnMessage(event) {
     var data = event.data;
+    if (data.targetName !== this.sourceName) {
+      return;
+    }
     if (data.isReply) {
       var callbackId = data.callbackId;
       if (data.callbackId in callbacksCapabilities) {
@@ -1495,10 +1531,14 @@ function MessageHandler(name, comObj) {
     } else if (data.action in ah) {
       var action = ah[data.action];
       if (data.callbackId) {
+        var sourceName = this.sourceName;
+        var targetName = data.sourceName;
         Promise.resolve().then(function () {
           return action[0].call(action[1], data.data);
         }).then(function (result) {
           comObj.postMessage({
+            sourceName: sourceName,
+            targetName: targetName,
             isReply: true,
             callbackId: data.callbackId,
             data: result
@@ -1509,6 +1549,8 @@ function MessageHandler(name, comObj) {
             reason = reason + '';
           }
           comObj.postMessage({
+            sourceName: sourceName,
+            targetName: targetName,
             isReply: true,
             callbackId: data.callbackId,
             error: reason
@@ -1520,7 +1562,8 @@ function MessageHandler(name, comObj) {
     } else {
       error('Unknown action from worker: ' + data.action);
     }
-  };
+  }.bind(this);
+  comObj.addEventListener('message', this._onComObjOnMessage);
 }
 
 MessageHandler.prototype = {
@@ -1539,6 +1582,8 @@ MessageHandler.prototype = {
    */
   send: function messageHandlerSend(actionName, data, transfers) {
     var message = {
+      sourceName: this.sourceName,
+      targetName: this.targetName,
       action: actionName,
       data: data
     };
@@ -1556,6 +1601,8 @@ MessageHandler.prototype = {
     function messageHandlerSendWithPromise(actionName, data, transfers) {
     var callbackId = this.callbackIndex++;
     var message = {
+      sourceName: this.sourceName,
+      targetName: this.targetName,
       action: actionName,
       data: data,
       callbackId: callbackId
@@ -1581,6 +1628,10 @@ MessageHandler.prototype = {
     } else {
       this.comObj.postMessage(message);
     }
+  },
+
+  destroy: function () {
+    this.comObj.removeEventListener('message', this._onComObjOnMessage);
   }
 };
 
